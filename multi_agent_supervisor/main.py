@@ -1,8 +1,10 @@
 from typing import Annotated, Literal, TypedDict, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-from langchain.chat_models import init_chat_model, BaseChatModel
+from langchain.chat_models import init_chat_model
+from langchain.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 from functools import partial
 from dotenv import load_dotenv
@@ -16,9 +18,6 @@ from prompts import (
 
 load_dotenv()
 
-temperature = 1.0
-model = init_chat_model(model="anthropic:claude-haiku-4-5", temperature=temperature)
-
 
 class AgentState(TypedDict):
     """Shared state that flows through the entire graph."""
@@ -26,6 +25,7 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     next_agent: str
     task_complete: bool
+    last_worker: str
 
 
 class SupervisorDecision(BaseModel):
@@ -37,6 +37,27 @@ class SupervisorDecision(BaseModel):
     reasoning: str = Field(
         description="Brief explanation of why this agent was chosen."
     )
+
+
+@tool
+def save_file(content: str, file_name: str) -> bool:
+    """Tool for saving any content to a file"""
+    try:
+        with open(file_name, "w") as file:
+            file.write(content)
+
+            print(f"Content successfully saved to {file_name}")
+            return True
+    except Exception as e:
+        print(f"Content failed to save...")
+        return False
+
+
+temperature = 1.0
+tools = [save_file]
+model = init_chat_model(
+    model="anthropic:claude-haiku-4-5", temperature=temperature
+).bind_tools(tools=tools)
 
 
 def supervisor(state: AgentState) -> AgentState:
@@ -61,14 +82,21 @@ def supervisor(state: AgentState) -> AgentState:
 
 
 def worker(state: AgentState, system_prompt: str, name: str) -> AgentState:
-    """Specialist worker node that has a specific task"""
+    """Specialist worker node that has a specific task."""
     messages = [SystemMessage(content=system_prompt)] + list(state["messages"])
     response = model.invoke(messages)
     response.name = name
 
-    return {
-        "messages": [AIMessage(content=response.content, name=name)],
-    }
+    return {"messages": [response], "last_worker": name}
+
+
+def route_after_worker(state: AgentState) -> str:
+    """Route to the tool node if the last message has tool calls, otherwise back to supervisor."""
+    last_message = state["messages"][-1]
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "save"
+
+    return "supervisor"
 
 
 def route_after_supervisor(state: AgentState) -> str:
@@ -80,6 +108,7 @@ def route_after_supervisor(state: AgentState) -> str:
 
 
 def run(query: str) -> list[BaseMessage]:
+    # Supervisor -> Worker -> Save Tool -> Worker -> END
     graph = StateGraph(AgentState)
 
     graph.add_node("supervisor", supervisor)
@@ -93,6 +122,7 @@ def run(query: str) -> list[BaseMessage]:
     graph.add_node(
         "analyst", partial(worker, system_prompt=ANALYST_SYSTEM_PROMPT, name="analyst")
     )
+    graph.add_node("save", ToolNode(tools=tools))
 
     graph.set_entry_point("supervisor")
 
@@ -108,9 +138,20 @@ def run(query: str) -> list[BaseMessage]:
         },
     )
 
-    # After any worker finishes, route back to the supervisor for the next decision
+    # After any worker finishes, check for tool calls before routing back to supervisor
     for worker_name in ["researcher", "coder", "analyst"]:
-        graph.add_edge(worker_name, "supervisor")
+        graph.add_conditional_edges(
+            worker_name,
+            route_after_worker,
+            {"save": "save", "supervisor": "supervisor"},
+        )
+
+    # After tool execution, route back to the worker that requested the save
+    graph.add_conditional_edges(
+        "save",
+        lambda state: state["last_worker"],
+        {"researcher": "researcher", "coder": "coder", "analyst": "analyst"},
+    )
 
     app = graph.compile()
 
@@ -118,6 +159,7 @@ def run(query: str) -> list[BaseMessage]:
         "messages": [HumanMessage(content=query)],
         "next_agent": "",
         "task_complete": False,
+        "last_worker": "",
     }
 
     print(f"User query: {query}\n")
@@ -138,14 +180,12 @@ def run(query: str) -> list[BaseMessage]:
 if __name__ == "__main__":
     # Research task
     run(
-        "What are the key differences between GNNs and Graph Transformers? "
-        "Summarize the trade-offs in expressivity and scalability."
+        "Explain the key architecture of a decoder-only transformer, and save the content to a markdown file."
     )
 
     # Coding task
     run(
-        "Write a Python function that implements the Floyd-Warshall algorithm "
-        "with type hints and a docstring."
+        "Write and save a Python function that implements a Depth First Search (DFS) algorithm with example tests provided."
     )
 
     # Multi-step task requiring multiple agents
