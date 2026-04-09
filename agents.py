@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 from typing import Annotated, Literal, TypedDict, Sequence, Generator
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain.chat_models import BaseChatModel, init_chat_model
@@ -13,11 +14,16 @@ from prompts import (
     RESEARCHER_SYSTEM_PROMPT,
     CODER_SYSTEM_PROMPT,
     ANALYST_SYSTEM_PROMPT,
+    SPECIFICATION_SYSTEM_PROMPT,
+    TESTER_SYSTEM_PROMPT,
+    DEBUGGER_SYSTEM_PROMPT,
 )
 
-MODEL_ID = "anthropic:claude-haiku-4-5"
+load_dotenv()
+
+MODEL_ID = "anthropic:claude-sonnet-4-6"
 TEMPERATURE = 1.0
-WORKERS = ["researcher", "coder", "analyst"]
+WORKERS = ["researcher", "coder", "analyst", "specification", "tester", "debugger"]
 
 MODEL_CATALOG = [
     # Anthropic
@@ -42,13 +48,20 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     next_agent: str
     task_complete: bool
-    last_worker: str
 
 
 class SupervisorDecision(BaseModel):
     """The supervisor's routing decision."""
 
-    next: Literal["researcher", "coder", "analyst", "FINISH"] = Field(
+    next: Literal[
+        "researcher",
+        "coder",
+        "analyst",
+        "specification",
+        "tester",
+        "debugger",
+        "FINISH",
+    ] = Field(
         description="Which worker to route to next, or FINISH if the task is complete."
     )
     reasoning: str = Field(
@@ -62,6 +75,7 @@ class AgentEvent(TypedDict):
     node: str
     content: str
     event_type: str  # "routing", "response", "tool", "done"
+    message: BaseMessage | None
 
 
 @tool
@@ -104,16 +118,16 @@ def worker(
     response = model.invoke(messages)
     response.name = name
 
-    return {"messages": [response], "last_worker": name}
+    return {"messages": [response]}
 
 
 def route_after_worker(state: AgentState) -> str:
-    """Route to the tool node if the last message has tool calls, otherwise back to supervisor."""
+    """Route to the tool node if the last message has tool calls, otherwise end and wait for user."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "save"
 
-    return "supervisor"
+    return END
 
 
 def route_after_supervisor(state: AgentState) -> str:
@@ -124,7 +138,19 @@ def route_after_supervisor(state: AgentState) -> str:
     return state["next_agent"]
 
 
-def run(query: str, model: BaseChatModel) -> Generator[AgentEvent, None, None]:
+def extract_text(content: str | list) -> str:
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+
+    return content
+
+
+def run(
+    messages: list[BaseMessage], model: BaseChatModel
+) -> Generator[AgentEvent, None, None]:
     graph = StateGraph(AgentState)
 
     graph.add_node("supervisor", partial(supervisor, model=model))
@@ -138,10 +164,49 @@ def run(query: str, model: BaseChatModel) -> Generator[AgentEvent, None, None]:
         ),
     )
     graph.add_node(
-        "coder", partial(worker, system_prompt=CODER_SYSTEM_PROMPT, name="coder")
+        "coder",
+        partial(
+            worker,
+            model=model,
+            system_prompt=CODER_SYSTEM_PROMPT,
+            name="coder",
+        ),
     )
     graph.add_node(
-        "analyst", partial(worker, system_prompt=ANALYST_SYSTEM_PROMPT, name="analyst")
+        "analyst",
+        partial(
+            worker,
+            model=model,
+            system_prompt=ANALYST_SYSTEM_PROMPT,
+            name="analyst",
+        ),
+    )
+    graph.add_node(
+        "specification",
+        partial(
+            worker,
+            model=model,
+            system_prompt=SPECIFICATION_SYSTEM_PROMPT,
+            name="specification",
+        ),
+    )
+    graph.add_node(
+        "tester",
+        partial(
+            worker,
+            model=model,
+            system_prompt=TESTER_SYSTEM_PROMPT,
+            name="tester",
+        ),
+    )
+    graph.add_node(
+        "debugger",
+        partial(
+            worker,
+            model=model,
+            system_prompt=DEBUGGER_SYSTEM_PROMPT,
+            name="debugger",
+        ),
     )
     graph.add_node("save", ToolNode(tools=tools))
 
@@ -150,34 +215,25 @@ def run(query: str, model: BaseChatModel) -> Generator[AgentEvent, None, None]:
     graph.add_conditional_edges(
         "supervisor",
         route_after_supervisor,
-        {
-            "researcher": "researcher",
-            "coder": "coder",
-            "analyst": "analyst",
-            END: END,
-        },
+        {worker: worker for worker in WORKERS} | {END: END},
     )
 
     for worker_name in WORKERS:
         graph.add_conditional_edges(
             worker_name,
             route_after_worker,
-            {"save": "save", "supervisor": "supervisor"},
+            {"save": "save", END: END},
         )
 
-    graph.add_conditional_edges(
-        "save",
-        lambda state: state["last_worker"],
-        {"researcher": "researcher", "coder": "coder", "analyst": "analyst"},
-    )
+    # After tool use, end the graph and return to user
+    graph.add_edge("save", END)
 
     app = graph.compile()
 
     initial_state = {
-        "messages": [HumanMessage(content=query)],
+        "messages": messages,
         "next_agent": "",
         "task_complete": False,
-        "last_worker": "",
     }
 
     for step in app.stream(initial_state):
@@ -193,13 +249,20 @@ def run(query: str, model: BaseChatModel) -> Generator[AgentEvent, None, None]:
                 else:
                     event_type = "response"
 
+                text = extract_text(message.content)
+                if not text:
+                    continue
+
                 yield AgentEvent(
                     node=node_name,
-                    content=message.content,
+                    content=text,
                     event_type=event_type,
+                    message=message,
                 )
 
-    yield AgentEvent(node="system", content="Task complete.", event_type="done")
+    yield AgentEvent(
+        node="system", content="Task complete.", event_type="done", message=None
+    )
 
 
 def create_model(model_id: str) -> BaseChatModel:
