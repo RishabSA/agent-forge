@@ -19,6 +19,22 @@ MODEL_ID = "anthropic:claude-haiku-4-5"
 TEMPERATURE = 1.0
 WORKERS = ["researcher", "coder", "analyst"]
 
+MODEL_CATALOG = [
+    # Anthropic
+    ("Claude Opus 4.6", "anthropic:claude-opus-4-6", "ANTHROPIC_API_KEY"),
+    ("Claude Sonnet 4.6", "anthropic:claude-sonnet-4-6", "ANTHROPIC_API_KEY"),
+    ("Claude Haiku 4.5", "anthropic:claude-haiku-4-5", "ANTHROPIC_API_KEY"),
+    # OpenAI
+    ("GPT-5.4", "openai:gpt-5.4", "OPENAI_API_KEY"),
+    ("GPT-5.4 Mini", "openai:gpt-5.4-mini", "OPENAI_API_KEY"),
+    ("GPT-5.4 Nano", "openai:gpt-5.4-nano", "OPENAI_API_KEY"),
+    ("GPT-5", "openai:gpt-5", "OPENAI_API_KEY"),
+    ("GPT-5 Mini", "openai:gpt-5-mini", "OPENAI_API_KEY"),
+    ("GPT-4o", "openai:gpt-4o", "OPENAI_API_KEY"),
+    ("GPT-4.1", "openai:gpt-4.1", "OPENAI_API_KEY"),
+    ("GPT-4.1 Mini", "openai:gpt-4.1-mini", "OPENAI_API_KEY"),
+]
+
 
 class AgentState(TypedDict):
     """Shared state that flows through the entire graph."""
@@ -184,6 +200,12 @@ def run(query: str, model: BaseChatModel) -> Generator[AgentEvent, None, None]:
                 )
 
     yield AgentEvent(node="system", content="Task complete.", event_type="done")
+
+
+def create_model(model_id: str) -> BaseChatModel:
+    return init_chat_model(model=model_id, temperature=TEMPERATURE).bind_tools(
+        tools=tools
+    )
 
 
 tools = [save_file]

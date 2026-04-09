@@ -1,12 +1,24 @@
+import os
+
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll, Horizontal
-from textual.widgets import Header, Footer, Static, Input, Label, Rule
+from textual.containers import VerticalScroll, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Header, Footer, Static, Input, Rule, OptionList
+from textual.widgets.option_list import Option
 from textual.reactive import reactive
 from rich.markdown import Markdown
 from rich.text import Text
 
-from agents import MODEL_ID, TEMPERATURE, WORKERS, run, model
+from agents import (
+    MODEL_ID,
+    TEMPERATURE,
+    WORKERS,
+    MODEL_CATALOG,
+    run,
+    model,
+    create_model,
+)
 
 AGENT_COLORS = {
     "supervisor": "bright_yellow",
@@ -32,13 +44,14 @@ class StatusBar(Static):
     active_agent: reactive[str] = reactive("idle")
     is_thinking: reactive[bool] = reactive(False)
     step_count: reactive[int] = reactive(0)
+    model_id: reactive[str] = reactive(MODEL_ID)
 
     def render(self) -> Text:
         text = Text()
 
         # Model badge
         text.append(" MODEL ", style="bold white on dark_blue")
-        text.append(f" {MODEL_ID} ", style="bright_white")
+        text.append(f" {self.model_id} ", style="bright_white")
         text.append("  ")
 
         # Temperature
@@ -96,8 +109,115 @@ class MessageBlock(Static):
             yield Static(Markdown(self.msg_content), classes="msg-body")
 
 
-class MultiAgentTUI(App):
-    TITLE = "Multi-Agent Supervisor"
+class ModelPickerScreen(ModalScreen[str | None]):
+    """Modal screen for selecting a model from the catalog."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    ModelPickerScreen {
+        align: center middle;
+    }
+
+    #model-picker-container {
+        width: 70;
+        height: auto;
+        max-height: 80%;
+        background: $surface;
+        border: tall $accent;
+        padding: 1 2;
+    }
+
+    #model-picker-title {
+        text-align: center;
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+
+    #model-list {
+        height: auto;
+        max-height: 20;
+    }
+    """
+
+    def __init__(self, current_model_id: str) -> None:
+        super().__init__()
+        self.current_model_id = current_model_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="model-picker-container"):
+            yield Static(
+                Text("Select Model", style="bold bright_white"),
+                id="model-picker-title",
+            )
+
+            options: list[Option] = []
+            current_provider = ""
+
+            for pretty_name, model_id, env_var in MODEL_CATALOG:
+                provider = model_id.split(":")[0].upper()
+                if provider != current_provider:
+                    if current_provider:
+                        # Visual separator between providers
+                        options.append(
+                            Option(
+                                Text(f"  ── {provider} ──", style="dim bold"),
+                                disabled=True,
+                            )
+                        )
+                    else:
+                        options.append(
+                            Option(
+                                Text(f"  ── {provider} ──", style="dim bold"),
+                                disabled=True,
+                            )
+                        )
+                    current_provider = provider
+
+                has_key = bool(os.environ.get(env_var))
+                marker = "●" if model_id == self.current_model_id else "○"
+
+                if has_key:
+                    label = Text.assemble(
+                        (
+                            f" {marker} ",
+                            (
+                                "bold bright_green"
+                                if model_id == self.current_model_id
+                                else "dim"
+                            ),
+                        ),
+                        (f"{pretty_name}", "bright_white"),
+                        ("  ", ""),
+                        (f"{model_id}", "dim"),
+                    )
+                else:
+                    label = Text.assemble(
+                        (f" ✗ ", "dim red"),
+                        (f"{pretty_name}", "dim"),
+                        ("  ", ""),
+                        (f"{model_id}", "dim"),
+                        ("  (no API key)", "dim red italic"),
+                    )
+
+                options.append(Option(label, id=model_id, disabled=not has_key))
+
+            yield OptionList(*options, id="model-list")
+            yield Static(
+                Text("ESC to cancel  •  ENTER to select", style="dim"),
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option_id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AgentForgeTUI(App):
+    TITLE = "AgentForge"
     CSS = """
     Screen {
         background: $surface;
@@ -162,8 +282,11 @@ class MultiAgentTUI(App):
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+l", "clear_log", "Clear"),
+        ("ctrl+k", "pick_model", "Model"),
         ("escape", "quit", "Quit"),
     ]
+
+    current_model_id: reactive[str] = reactive(MODEL_ID)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -192,15 +315,14 @@ class MultiAgentTUI(App):
         self.query_one("#status-bar").update(status.render())
 
         self._status_bar = StatusBar()
+        self._model = model
 
         # Welcome message
         log = self.query_one("#message-log", VerticalScroll)
         welcome = Text()
+        welcome.append("Welcome to AgentForge!\n", style="bold bright_white")
         welcome.append(
-            "Welcome to the Multi-Agent Supervisor\n", style="bold bright_white"
-        )
-        welcome.append(
-            "Enter a prompt below to start the multi-agent supervisor.\n",
+            "Enter a prompt below to start AgentForge.\n",
             style="dim white",
         )
         welcome.append(
@@ -236,6 +358,7 @@ class MultiAgentTUI(App):
         self._status_bar.active_agent = active_agent
         self._status_bar.is_thinking = is_thinking
         self._status_bar.step_count = step_count
+        self._status_bar.model_id = self.current_model_id
         self.query_one("#status-bar").update(self._status_bar.render())
 
     @work(thread=True)
@@ -244,7 +367,7 @@ class MultiAgentTUI(App):
 
         self.call_from_thread(self.update_status, "supervisor", True, step_count)
 
-        for event in run(query, model):
+        for event in run(query, self._model):
             step_count += 1
             node = event["node"]
             content = event["content"]
@@ -279,6 +402,33 @@ class MultiAgentTUI(App):
             input_widget.focus()
 
         self.call_from_thread(enable_input)
+
+    def _on_model_selected(self, model_id: str | None) -> None:
+        if model_id is None or model_id == self.current_model_id:
+            return
+
+        self._model = create_model(model_id)
+        self.current_model_id = model_id
+
+        # Find pretty name for the selected model
+        pretty_name = model_id
+        for name, mid, _ in MODEL_CATALOG:
+            if mid == model_id:
+                pretty_name = name
+                break
+
+        self.add_message(
+            "system",
+            f"Model switched to **{pretty_name}** (`{model_id}`)",
+            "done",
+        )
+        self.update_status()
+
+    def action_pick_model(self) -> None:
+        self.push_screen(
+            ModelPickerScreen(self.current_model_id),
+            callback=self._on_model_selected,
+        )
 
     def action_clear_log(self) -> None:
         log = self.query_one("#message-log", VerticalScroll)
