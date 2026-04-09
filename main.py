@@ -319,9 +319,9 @@ class AgentForgeTUI(App):
         status.id = "status-bar-widget"
         self.query_one("#status-bar").update(status.render())
 
-        self._status_bar = StatusBar()
-        self._model = model
-        self._conversation_history: list = []
+        self.status_bar = StatusBar()
+        self.model = model
+        self.conversation_history: list = []
 
         # Welcome message
         log = self.query_one("#message-log", VerticalScroll)
@@ -361,21 +361,21 @@ class AgentForgeTUI(App):
         is_thinking: bool = False,
         step_count: int = 0,
     ) -> None:
-        self._status_bar.active_agent = active_agent
-        self._status_bar.is_thinking = is_thinking
-        self._status_bar.step_count = step_count
-        self._status_bar.model_id = self.current_model_id
-        self.query_one("#status-bar").update(self._status_bar.render())
+        self.status_bar.active_agent = active_agent
+        self.status_bar.is_thinking = is_thinking
+        self.status_bar.step_count = step_count
+        self.status_bar.model_id = self.current_model_id
+        self.query_one("#status-bar").update(self.status_bar.render())
 
     @work(thread=True)
     def run_agents(self, query: str) -> None:
         step_count = 0
 
-        self._conversation_history.append(HumanMessage(content=query))
+        self.conversation_history.append(HumanMessage(content=query))
 
         self.call_from_thread(self.update_status, "supervisor", True, step_count)
 
-        for event in run(list(self._conversation_history), self._model):
+        for event in run(list(self.conversation_history), self.model):
             step_count += 1
             node = event["node"]
             content = event["content"]
@@ -384,7 +384,7 @@ class AgentForgeTUI(App):
 
             # Accumulate agent messages into history for future runs
             if message is not None:
-                self._conversation_history.append(message)
+                self.conversation_history.append(message)
 
             if event_type == "done":
                 self.call_from_thread(self.add_message, node, content, event_type)
@@ -420,7 +420,7 @@ class AgentForgeTUI(App):
         if model_id is None or model_id == self.current_model_id:
             return
 
-        self._model = create_model(model_id)
+        self.model = create_model(model_id)
         self.current_model_id = model_id
 
         # Find pretty name for the selected model
