@@ -144,7 +144,8 @@ AgentForge/
 ├── main.py            # Textual TUI: status bar, model picker, streaming log
 ├── agents.py          # LangGraph StateGraph, supervisor/worker nodes, tools
 ├── prompts.py         # System prompts for supervisor and all six specialists
-├── requirements.txt   # langgraph, langchain, textual, rich
+├── pyproject.toml     # Project metadata and dependencies (uv)
+├── uv.lock            # Locked dependency tree
 ├── .env               # API keys (not committed)
 ├── LICENSE
 └── README.md
