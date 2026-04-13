@@ -1,0 +1,15 @@
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "AgentForge is a multi-agent orchestration system built with LangGraph and LangChain, driven from a rich terminal UI powered by Textual. A supervisor LLM routes user requests to a team of six specialist agents, each with a focused role, and streams their reasoning, routing decisions, and tool calls back to an interactive TUI in real time."
+readme = "README.md"
+requires-python = ">=3.13.7"
+dependencies = [
+    "langchain>=1.2.15",
+    "langchain-anthropic>=1.4.0",
+    "langchain-openai>=1.1.12",
+    "langgraph>=1.1.6",
+    "python-dotenv>=1.2.2",
+    "rich>=15.0.0",
+    "textual>=8.2.3",
+]

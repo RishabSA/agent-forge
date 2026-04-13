@@ -56,7 +56,7 @@ The entire graph executes inside a LangGraph `StateGraph`, and every node transi
 git clone https://github.com/RishabSA/AgentForge.git
 cd AgentForge
 
-pip install -r requirements.txt
+uv sync
 ```
 
 ### Environment variables
@@ -75,7 +75,7 @@ Only providers with a valid key will be selectable in the model picker; the rest
 Launch the AgentForge Terminal User Interface (TUI) with:
 
 ```bash
-python main.py
+uv run main.py
 ```
 
 Enter a prompt at the bottom of the screen and press **Enter**. The supervisor will inspect your request, route it to the appropriate specialist(s), and stream each step of the conversation into the log.

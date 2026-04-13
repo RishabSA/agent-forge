@@ -114,7 +114,10 @@ def worker(
     state: AgentState, model: BaseChatModel, system_prompt: str, name: str
 ) -> AgentState:
     """Specialist worker node that has a specific task."""
-    messages = [SystemMessage(content=system_prompt)] + list(state["messages"])
+    # Exclude supervisor routing messages: they end with an AIMessage, which the
+    # Anthropic API rejects when it's not the final turn of a prefilled assistant turn.
+    filtered = [m for m in state["messages"] if not (isinstance(m, AIMessage) and getattr(m, "name", None) == "supervisor")]
+    messages = [SystemMessage(content=system_prompt)] + filtered
     response = model.invoke(messages)
     response.name = name
 

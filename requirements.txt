@@ -1,4 +1,0 @@
-langgraph>=1.1.6
-langchain>=1.2.15
-textual>=8.2.3
-rich>=14.3.3
